@@ -1,0 +1,451 @@
+---
+title: "Final_Project"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading the required libraries
+
+```{r libraries}
+
+library(moments) 
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(corrplot)
+library(factoextra)
+library(caret)
+library(DMwR)
+library(randomForest)
+library(caTools)
+library(purrr)
+library(cluster)
+library(FSelector)
+library(MLmetrics)
+library(rpart)
+library(rattle)
+library(BGSIMD)
+
+```
+
+## Loading the data
+
+```{r data}
+
+creditcard = read.csv("creditcard.csv")
+
+```
+
+## Missing Values
+
+```{r missing_values}
+
+func = function(x) {
+  any(is.na(x))
+  }
+check_missingvalues = apply(creditcard,2,func);
+check_missingvalues
+
+```
+
+## Visualization
+
+```{r Skewness}
+
+agostino.test(creditcard$Amount[0:46340])
+
+```
+
+```{r Kurtosis}
+
+anscombe.test(creditcard$Amount)
+
+```
+
+```{r Histogram}
+
+hist(
+     creditcard$Amount,
+     freq=FALSE,
+     main = "Distribution of Amount",
+     xlab = "Amount",
+     col = "darkmagenta"
+     )
+
+lines(
+      density(creditcard$Amount), 
+      lwd = 2, 
+      col = "blue")
+
+rug(creditcard$Amount)
+
+```
+
+```{r Class_var}
+
+ggplot(creditcard, aes(x = Class)) +
+  geom_bar(position  = "dodge", fill = "darkmagenta") +
+  scale_y_continuous() +
+  scale_x_discrete() +
+  ggtitle("Classification of Class Variable")
+
+```
+
+```{r Amounts_by_class}
+
+ggplot(creditcard, aes(x = Class, y = Amount, group = Class)) +
+  geom_boxplot() +
+  ggtitle("Classification of Amount by Class")
+
+```
+
+```{r fraud_non-fraud_diff}
+
+#choosing the required variables for the plot
+v_data <- gather(creditcard, type, value, 2:29)
+v_data <- v_data%>% select(Time, type, value, Amount, Class)
+
+ggplot(v_data, aes(x = value, y = Amount, color = type)) +
+  geom_jitter() +
+  facet_grid(.~Class) +
+  ggtitle("Classification of Non-Fraud and Fraud Class")
+
+```
+
+## Dimentionality Reduction
+
+```{r importance_variable}
+
+data_pca <- prcomp(creditcard[,-31], center = TRUE, scale = TRUE)
+summary(data_pca)
+
+```
+
+
+
+```{r corelation_plot}
+
+data_matrix <- data.matrix(data_pca$x, rownames.force = NA)
+M <- cor(data_matrix)
+corrplot(M, method = "number", number.cex = 0.75)
+
+```
+
+````{r PCA}
+
+fviz_pca_var(data_pca, col.var = "red", repel = TRUE, axes = c(1, 2)) +
+  labs(title="PCA", x="PC1", y="PC2")
+
+```
+
+## Scaling and Normalzing
+
+```{r scale_norm}
+
+preproc1 <- preProcess(creditcard[,c(1:30)], method=c("center", "scale"))
+scaled_data <- predict(preproc1, creditcard[,c(1:30)])
+summary(scaled_data)
+
+preproc2 <- preProcess(creditcard[,c(1:30)], method=c("range"))
+norm2 <- predict(preproc2, creditcard[,c(1:30)])
+summary(norm2)
+
+```
+
+## Balancing the data
+
+```{r balance_data}
+
+table(creditcard$Class)
+
+creditcard_f <- creditcard
+
+creditcard_f$Class <- as.factor(creditcard_f$Class)
+
+balanced_data <- SMOTE(Class ~., creditcard_f, perc.over = 3000, perc.under = 100, k = 5)
+
+table(balanced_data$Class)
+
+```
+
+## Splitting the data
+
+```{r data_split}
+
+set.seed(1234)
+sample = sample.split(creditcard, SplitRatio = 0.60)
+train = subset(creditcard, sample == TRUE)
+test = subset(creditcard, sample == FALSE)
+
+set.seed(1234)
+sample_balanced = sample.split(balanced_data, SplitRatio = 0.60)
+train_balanced = subset(balanced_data, sample == TRUE)
+test_balanced = subset(balanced_data, sample == FALSE)
+
+```
+
+## Cluster Analysis
+
+```{r K-Means}
+
+train_scaled <- scale(train)
+
+train_DF <- data.frame(train)
+
+train_dist <- dist(train_scaled[1:50], method = "euclidean")
+
+avg_sil <- function(k) {
+  km_res <- kmeans(train_scaled[1:50], centers = k, nstart = 25)
+  ss <- silhouette(km_res$cluster, train_dist)
+  mean(ss[, 3])
+}
+
+k_values <- 2:15
+
+avg_sil_values <- map_dbl(k_values, avg_sil)
+
+plot(k_values, avg_sil_values,
+       type = "b", pch = 19, frame = FALSE, 
+       xlab = "Number of clusters K",
+       ylab = "Average Silhouettes")
+
+model_kmean <- kmeans(train, 2)
+
+train_DF %>%
+  as_tibble() %>%
+  mutate(cluster = model_kmean$cluster,
+         state = row.names(train_DF)) %>%
+  ggplot(aes(V24, Class, color = factor(cluster), label = state)) +
+  geom_text()
+
+```
+
+```{r Hierarchical Analysis}
+
+hc <- hclust(train_dist, method = "complete" )
+plot(hc, cex = 0.6, hang = -1)
+
+plot(hc, cex = 0.6)
+rect.hclust(hc, k = 8, border = 2:5)
+
+```
+
+## Model
+
+```{r Logistic_regression}
+
+model_LR = glm(Class~., data = train_balanced, family = binomial)
+summary(model_LR)
+
+pred  = predict(model_LR, newdata = test_balanced[,-31], type = "response")
+pred = ifelse(pred > 0.5, 1, 0)
+lm_cf = length(which(pred == test_balanced$Class))
+lm_cf = lm_cf/nrow(test_balanced)
+lm_cf
+
+```
+
+```{r Logistic_regression_important_variables}
+
+
+weights = chi.squared(Class~., data = train_balanced)
+subset = cutoff.k(weights, 15)
+print(subset)
+form = as.simple.formula(subset, "Class")
+
+```
+
+```{r Logistic_regression_updated} 
+
+model_LR_updated = glm(formula = form, data = train_balanced, family = binomial(link = "logit"))
+summary(model_LR_updated)
+
+pred_updated  = predict(model_LR_updated, newdata = test_balanced[,-31], type = "response")
+pred_updated = ifelse(pred_updated > 0.5, 1, 0)
+lm_cf_updated = length(which(pred_updated == test_balanced$Class))
+lm_cf_updated = lm_cf_updated/nrow(test_balanced)
+lm_cf_updated
+
+
+```
+
+## Random Forest
+
+```{r random_forest}
+
+model_RF = randomForest(Class~.,  
+                   ntree = 100,
+                   data = train_balanced)
+
+predicted_response <- predict(model_RF, test_balanced[,-31])
+
+test_balanced$predicted <- predict(model_RF, test_balanced[,-31])
+
+confusionMatrix(data = predicted_response,  
+              reference = as.factor(test_balanced$Class))
+
+score_all <- F1_Score(test_balanced$Class, test_balanced$predicted)
+score_all
+```
+
+```{r random_forest_important_variable}
+
+options(repr.plot.width = 5, repr.plot.height = 4)
+varImpPlot(model_RF,
+          sort = T,
+           n.var = 15,
+           main = "15 Most Important variables")
+
+```
+
+```{r random_forest_important_variable_1var}
+
+model_RF_v1 = randomForest(Class~ V14,  
+                   ntree = 100,
+                   data = train_balanced)
+
+test_balanced$predicted_v1 <- predict(model_RF_v1, test_balanced[,-31])
+
+
+score_1var <- F1_Score(test_balanced$Class, test_balanced$predicted_v1)
+score_1var
+
+```
+
+```{r random_forest_important_variable_2var}
+
+model_RF_v2 = randomForest(Class~ V14 + V4,  
+                   ntree = 100,
+                   data = train_balanced)
+
+test_balanced$predicted_v2 <- predict(model_RF_v2, test_balanced[,-31])
+
+
+score_2var <- F1_Score(test_balanced$Class, test_balanced$predicted_v2)
+score_2var
+
+```
+
+```{r random_forest_important_variable_3var}
+
+model_RF_v3 = randomForest(Class~ V14 + V4 + V12,  
+                   ntree = 100,
+                   data = train_balanced)
+
+test_balanced$predicted_v3 <- predict(model_RF_v3, test_balanced[,-31])
+
+
+score_3var <- F1_Score(test_balanced$Class, test_balanced$predicted_v3)
+score_3var
+
+```
+
+```{r random_forest_important_variable_4var}
+
+model_RF_v4 = randomForest(Class~ V14 + V4 + V12 + V10,  
+                   ntree = 100,
+                   data = train_balanced)
+
+test_balanced$predicted_v4 <- predict(model_RF_v4, test_balanced[,-31])
+
+
+score_4var <- F1_Score(test_balanced$Class, test_balanced$predicted_v4)
+score_4var
+
+```
+
+```{r random_forest_important_variable_5var}
+
+model_RF_v5 = randomForest(Class~ V14 + V4 + V12 + V10 + V17,  
+                   ntree = 100,
+                   data = train_balanced)
+
+test_balanced$predicted_v5 <- predict(model_RF_v5, test_balanced[,-31])
+
+
+score_5var <- F1_Score(test_balanced$Class, test_balanced$predicted_v5)
+score_5var
+
+```
+
+```{r random_forest_important_variable_10var}
+
+model_RF_v10 = randomForest(Class~ V14 + V4 + V12 + V10 + V17 + V11 + V7 + V3 + V16 + V2,  
+                   ntree = 100,
+                   data = train_balanced)
+
+test_balanced$predicted_v10 <- predict(model_RF_v10, test_balanced[,-31])
+
+
+score_10var <- F1_Score(test_balanced$Class, test_balanced$predicted_v10)
+score_10var
+
+```
+
+```{r random_forest_important_variable_15var}
+
+model_RF_v15 = randomForest(Class~ V14 + V4 + V12 + V10 + V17 + V11 + V7 + V3 + V16 + V2 + V9 + V18 + V21 + V19 + V8 ,  
+                   ntree = 100,
+                   data = train_balanced)
+
+test_balanced$predicted_v15 <- predict(model_RF_v15, test_balanced[,-31])
+
+
+score_15var <- F1_Score(test_balanced$Class, test_balanced$predicted_v15)
+score_15var
+
+```
+
+```{r random_forest_score_plot}
+
+var_num <- c(1, 2, 3, 4, 5, 10, 15, 20)
+score <- c(score_all, score_1var, score_2var, score_3var, score_4var, score_5var, score_10var, score_15var)
+var_DF <- data.frame(var_num, score)
+
+options(repr.plot.width = 4, repr.plot.height = 3)
+ggplot(var_DF, aes(var_num, score)) + 
+  geom_point() + 
+  labs(x = "Number of Variables", y = "F1 Score", title = "F1 Score Plot")
+
+```
+
+## Desicion tree
+
+```{r desicion_tree}
+
+model_DT <- rpart(Class~ ., train_balanced, control = rpart.control(maxdepth = 3))
+model_DT
+
+fancyRpartPlot(model_DT) 
+
+pred_DT <- predict(model_DT, test_balanced, type = "class")
+
+class_fac <- as.factor(test_balanced$Class)
+
+confusionMatrix(pred_DT, class_fac,
+                positive = "1",                 
+                dnn = c("predictions","actual"),  
+                mode = "prec_recall")    
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
